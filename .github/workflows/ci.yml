@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: lint · typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint .
+
+      # Next 16 generates LayoutProps/PageProps into .next/types; tsc cannot
+      # resolve them on a cold checkout until they exist.
+      - name: Generate route types
+        run: npx next typegen
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test the decision engine
+        run: npm test
+
+      # The build needs a syntactically valid key to construct the viem account
+      # at import time. It is a throwaway value and never touches a network -
+      # every route is force-dynamic, so nothing is rendered against chain here.
+      - name: Build
+        env:
+          AGENT_PRIVATE_KEY: '0x0000000000000000000000000000000000000000000000000000000000000001'
+        run: npm run build

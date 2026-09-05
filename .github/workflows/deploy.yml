@@ -1,0 +1,92 @@
+# Auto-deploy to Vercel.
+#
+# Only needed if the Vercel project is NOT connected to this repo through
+# Vercel's native GitHub integration. If you connect it in the Vercel dashboard
+# (Project -> Settings -> Git), Vercel deploys on every push by itself and this
+# workflow can be deleted.
+#
+# Required repository secrets:
+#   VERCEL_TOKEN      https://vercel.com/account/tokens
+#   VERCEL_ORG_ID     from .vercel/project.json  (orgId)
+#   VERCEL_PROJECT_ID from .vercel/project.json  (projectId)
+name: deploy
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # `needs:` cannot reference another workflow, so the gate is re-run here.
+      # Deploying past a failing decision-engine test is exactly the mistake
+      # this is meant to prevent.
+      - name: Install
+        run: npm ci
+
+      - name: Gate - lint, typecheck, test
+        run: |
+          npx eslint .
+          npx next typegen
+          npx tsc --noEmit
+          npm test
+
+      - name: Guard - secrets present
+        id: guard
+        env:
+          TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "VERCEL_TOKEN not set - skipping deploy."
+            echo "Either add the secret, or connect the repo in the Vercel dashboard."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Vercel CLI
+        if: steps.guard.outputs.ready == 'true'
+        run: npm i -g vercel@latest
+
+      - name: Pull production environment
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy
+        id: deploy
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed: $url"
+          echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
